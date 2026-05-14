@@ -1,57 +1,38 @@
-name: Build & Push Docker Image
+name: Deploy to EC2
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:  # Manual only
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  test:
-    name: Run Tests
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install pipenv
-        run: pip install pipenv
-
-      - name: Install dependencies
-        run: pipenv install --dev
-
-      - name: Run tests
-        run: pipenv run python manage.py test
-
-
-  build-and-push:
-    name: Build & Push Docker Image
-    runs-on: ubuntu-latest
-    needs: test  # 👈 this ensures tests must pass before this job runs
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+      - uses: aws-actions/configure-aws-credentials@v3
         with:
           role-to-assume: ${{ secrets.OIDC_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+      - uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & push Docker image
+      - name: Trigger remote deployment on EC2 via SSM
         run: |
-          IMAGE="${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest"
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+          aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Manual deploy from GitHub Actions" \
+            --parameters commands='[
+              "IMAGE=\"${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest\"",
+              "aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}",
+              "docker pull \"$IMAGE\"",
+              "docker stop rock-of-ages-api || true",
+              "docker rm rock-of-ages-api || true",
+              "docker run --pull always -d --name rock-of-ages-api -p 80:8000 -e DB_NAME=${{ secrets.DB_NAME }} -e DB_USER=${{ secrets.DB_USER }} -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} -e DB_HOST=${{ secrets.DB_HOST }} -e DB_PORT=${{ secrets.DB_PORT }} \"$IMAGE\""
+            ]' \
+            --region ${{ secrets.AWS_REGION }}
