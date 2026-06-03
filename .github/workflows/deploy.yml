@@ -41,4 +41,3 @@ jobs:
               -e DB_PORT=${{ secrets.DB_PORT }} \
               \"$IMAGE\""
           ]'
-
